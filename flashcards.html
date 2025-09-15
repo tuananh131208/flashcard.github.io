@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flashcards Ảnh</title>
+<style>
+  :root { --bg:#0f1115; --fg:#e8e8e8; --muted:#9aa0a6; --accent:#6ea8fe; }
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, sans-serif}
+  .wrap{display:grid;grid-template-rows:auto 1fr auto;min-height:100%}
+  header,footer{padding:.75rem 1rem;display:flex;gap:.5rem;align-items:center;justify-content:space-between;border-bottom:1px solid #20242d}
+  footer{border-top:1px solid #20242d;border-bottom:none;font-size:.9rem;color:var(--muted)}
+  .controls{display:flex;gap:.5rem;flex-wrap:wrap}
+  button, .btn{
+    background:#1b2330;color:var(--fg);border:1px solid #2a3240;border-radius:.6rem;
+    padding:.55rem .8rem;cursor:pointer;font-weight:600
+  }
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.active{outline:2px solid var(--accent)}
+  .counter{color:var(--muted);margin-left:.25rem}
+  .stage{position:relative;display:flex;align-items:center;justify-content:center}
+  .card{
+    position:relative;max-width:min(96vw,1400px);max-height:calc(100vh - 170px);
+    aspect-ratio:3/2;background:#0b0e14;border:1px solid #2a3240;border-radius:14px;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .card img{
+    width:100%;height:100%;object-fit:contain; /* sẽ đổi cover/contain bằng nút */
+    background:#0b0e14
+  }
+  .badge{
+    position:absolute;top:.6rem;left:.6rem;background:#0009;border:1px solid #2a3240;color:#fff;
+    padding:.25rem .5rem;border-radius:.5rem;font-size:.8rem
+  }
+  .overlay{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.55);color:#fff;text-align:center;padding:2rem
+  }
+  .overlay.show{display:flex}
+  .overlay .text{max-width:90%;font-size:1.25rem;line-height:1.7}
+  .help{opacity:.8}
+  a{color:var(--accent);text-decoration:none}
+  @media (max-width:700px){
+    .card{max-height:calc(100vh - 200px)}
+    .overlay .text{font-size:1.05rem}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="controls">
+      <button id="prevBtn" title="Trước (←)">← Trước</button>
+      <button id="nextBtn" title="Tiếp (→)">Tiếp →</button>
+      <button id="flipBtn" title="Lật (Space)">Lật (Space)</button>
+      <button id="shuffleBtn" title="Trộn ngẫu nhiên">Trộn</button>
+      <button id="fitBtn" title="Chế độ hiển thị ảnh (Cover/Contain)">Fit: Contain</button>
+    </div>
+    <div>
+      <strong id="folderName">images/flashcards</strong>
+      <span class="counter" id="counter">0 / 0</span>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="card" id="card">
+      <img id="img" alt="flashcard">
+      <div class="badge" id="caption">Đang tải…</div>
+      <div class="overlay" id="back">
+        <div class="text" id="backText">Mặt sau</div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="help">Phím tắt: ←/→ chuyển, Space lật, S = trộn, F = đổi Fit</div>
+    <div>Nguồn: <a href="https://api.github.com" target="_blank" rel="noopener">GitHub API</a></div>
+  </footer>
+
+</div>
+
+<script>
+/** === CẤU HÌNH: sửa 3 dòng này cho repo của bạn === **/
+const REPO_USER = 'tuananh131208';
+const REPO_NAME = 'tuananh131208.github.io';   // nếu site chính là username.github.io
+const BRANCH    = 'main';
+const FOLDER    = 'images/flashcards';         // thư mục chứa ảnh
+
+/** === Code chính: không cần sửa phía dưới === **/
+const API = `https://api.github.com/repos/${REPO_USER}/${REPO_NAME}/contents/${FOLDER}?ref=${BRANCH}`;
+const imgEl = document.getElementById('img');
+const capEl = document.getElementById('caption');
+const backEl = document.getElementById('back');
+const backTextEl = document.getElementById('backText');
+const counterEl = document.getElementById('counter');
+const fitBtn = document.getElementById('fitBtn');
+const shuffleBtn = document.getElementById('shuffleBtn');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const flipBtn = document.getElementById('flipBtn');
+
+let files = [];       // {name, url}
+let idx = 0;
+let isCover = false;  // false=contain, true=cover
+let shuffled = false;
+
+function titleFromName(name){
+  // Lấy tiêu đề từ tên file: "term__answer.jpg" → front=term, back=answer
+  const base = name.replace(/\.[^.]+$/, '');
+  return base.replace(/[_-]+/g,' ').trim();
+}
+function frontBackFromName(name){
+  // Nếu tên có "__" hoặc "--" thì tách front/back
+  const base = name.replace(/\.[^.]+$/, '');
+  let front = base, back = '';
+  const m = base.split(/__|--/);
+  if (m.length >= 2){ front = m[0]; back = m.slice(1).join(' — '); }
+  return {front: front.replace(/[_-]+/g,' ').trim(), back: back.replace(/[_-]+/g,' ').trim()};
+}
+
+async function fetchImages(){
+  capEl.textContent = 'Đang tải danh sách ảnh…';
+  const res = await fetch(API, {headers:{'Accept':'application/vnd.github+json'}});
+  if(!res.ok){
+    capEl.textContent = 'Không tải được danh sách ảnh. Kiểm tra REPO_USER/REPO_NAME/BRANCH/FOLDER.';
+    throw new Error('API error ' + res.status);
+  }
+  const data = await res.json();
+  files = data
+    .filter(it => it.type === 'file' && /\.(png|jpe?g|webp|gif|bmp)$/i.test(it.name))
+    .map(it => ({ name: it.name, url: it.download_url }));
+  if(files.length === 0){
+    capEl.textContent = 'Chưa có ảnh trong ' + FOLDER;
+    return;
+  }
+  if (shuffled) shuffleArray(files);
+  idx = 0;
+  show();
+}
+
+function show(){
+  if(files.length===0) return;
+  const item = files[idx];
+  const fb = frontBackFromName(item.name);
+  capEl.textContent = fb.front || titleFromName(item.name);
+  backTextEl.textContent = fb.back || '(Không có mặt sau — đặt tên ảnh như: tu-vung__nghia.jpg để có mặt sau)';
+  backEl.classList.remove('show'); // mặc định hiện mặt trước
+  counterEl.textContent = `${idx+1} / ${files.length}`;
+
+  // preload ảnh kế tiếp cho mượt
+  const next = new Image(); next.src = files[(idx+1)%files.length].url;
+
+  imgEl.src = item.url;
+}
+
+function prev(){ if(files.length){ idx = (idx - 1 + files.length) % files.length; show(); } }
+function next(){ if(files.length){ idx = (idx + 1) % files.length; show(); } }
+function flip(){ backEl.classList.toggle('show'); }
+function toggleFit(){
+  isCover = !isCover;
+  imgEl.style.objectFit = isCover ? 'cover' : 'contain';
+  fitBtn.textContent = 'Fit: ' + (isCover ? 'Cover' : 'Contain');
+}
+function toggleShuffle(){
+  shuffled = !shuffled;
+  shuffleBtn.classList.toggle('active', shuffled);
+  if (shuffled) shuffleArray(files);
+  idx = 0; show();
+}
+function shuffleArray(arr){
+  for(let i=arr.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]] = [arr[j],arr[i]];
+  }
+}
+
+// Sự kiện
+prevBtn.onclick = prev;
+nextBtn.onclick = next;
+flipBtn.onclick = flip;
+fitBtn.onclick = toggleFit;
+shuffleBtn.onclick = toggleShuffle;
+
+document.addEventListener('keydown', (e)=>{
+  if(e.key==='ArrowLeft') prev();
+  else if(e.key==='ArrowRight') next();
+  else if(e.key===' '){ e.preventDefault(); flip(); }
+  else if(e.key.toLowerCase()==='s') toggleShuffle();
+  else if(e.key.toLowerCase()==='f') toggleFit();
+});
+
+// Khởi chạy
+fetchImages().catch(console.error);
+</script>
+</body>
+</html>
